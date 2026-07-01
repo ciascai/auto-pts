@@ -736,6 +736,23 @@ def hdl_wid_114(params: WIDParams):
         'BAP/BSRC/STR/BV-31-C': '48_4_1',
         'BAP/BSRC/STR/BV-32-C': '48_5_1',
         'BAP/BSRC/STR/BV-33-C': '48_6_1',
+        # Cases with 1 BIS and 2 channels (AC14):
+        'BAP/BSRC/STR/BV-35-C': '8_1_1',
+        'BAP/BSRC/STR/BV-36-C': '8_2_1',
+        'BAP/BSRC/STR/BV-37-C': '16_1_1',
+        'BAP/BSRC/STR/BV-38-C': '16_2_1',
+        'BAP/BSRC/STR/BV-39-C': '24_1_1',
+        'BAP/BSRC/STR/BV-40-C': '24_2_1',
+        'BAP/BSRC/STR/BV-41-C': '32_1_1',
+        'BAP/BSRC/STR/BV-42-C': '32_2_1',
+        'BAP/BSRC/STR/BV-43-C': '441_1_1',
+        'BAP/BSRC/STR/BV-44-C': '441_2_1',
+        'BAP/BSRC/STR/BV-45-C': '48_1_1',
+        'BAP/BSRC/STR/BV-46-C': '48_2_1',
+        'BAP/BSRC/STR/BV-47-C': '48_3_1',
+        'BAP/BSRC/STR/BV-48-C': '48_4_1',
+        'BAP/BSRC/STR/BV-49-C': '48_5_1',
+        'BAP/BSRC/STR/BV-50-C': '48_6_1',
     }
 
     stack = get_stack()
@@ -746,6 +763,30 @@ def hdl_wid_114(params: WIDParams):
         broadcast_id = stack.bap.broadcast_id_2
     else:
         raise ValueError("hdl_wid_114 is not 0 or 1")
+
+    # Use PACS-defined location bits instead of raw literals to keep channel
+    # allocation explicit and consistent with the rest of the stack.
+    # Default is mono (front-left); specific STR AC ranges below override to
+    # stereo by combining front-left and front-right.
+    mono_audio_locations = defs.PACS_AUDIO_LOCATION_FRONT_LEFT
+    stereo_audio_locations = (
+        defs.PACS_AUDIO_LOCATION_FRONT_LEFT | defs.PACS_AUDIO_LOCATION_FRONT_RIGHT
+    )
+    audio_locations = mono_audio_locations
+
+    # Extract BV number once from the testcase name so we can map STR cases to
+    # their AC group behavior (channel allocation, BIS count, and QoS tweaks).
+    is_bsrc_str = params.test_case_name.startswith("BAP/BSRC/STR/")
+    tc_match = re.search(r'BV-(\d+)-C$', params.test_case_name)
+    tc_num = int(tc_match.group(1)) if (is_bsrc_str and tc_match) else -1
+
+    # BAP/BSRC/STR test numbering follows the PTS audio-config groups:
+    # BV-18..33 are AC13 (2 BIS) and BV-35..50 are AC14 (1 BIS, 2 channels).
+    # We use these ranges to select stereo channel allocation consistently.
+    is_str_ac13 = is_bsrc_str and 18 <= tc_num <= 33
+    is_str_ac14 = is_bsrc_str and 35 <= tc_num <= 50
+    if is_str_ac13 or is_str_ac14:
+        audio_locations = stereo_audio_locations
 
     if params.test_case_name in configurations:
         qos_set_name = configurations[params.test_case_name]
@@ -762,16 +803,19 @@ def hdl_wid_114(params: WIDParams):
 
     (sampling_freq, frame_duration, octets_per_frame) = \
         CODEC_CONFIG_SETTINGS[codec_set_name]
-    audio_locations = 0x01
     frames_per_sdu = 0x01
+    if is_str_ac14:
+        qos_config[2] *= count_1_bits(audio_locations)
 
     codec_ltvs_bytes = create_lc3_ltvs_bytes(sampling_freq, frame_duration,
                                              audio_locations, octets_per_frame,
                                              frames_per_sdu)
 
     streams_per_subgroup = 1
-    tc_num = int(re.findall(r'\d+', params.test_case_name)[0])
-    if tc_num >= 18:
+    # AC13 STR cases use two BISes (matching the same BV-18..33 range), so
+    # configure two streams per subgroup for broadcast source setup.
+    is_two_bis_str = is_bsrc_str and 18 <= tc_num <= 33
+    if is_two_bis_str:
         streams_per_subgroup = 2
 
     presentation_delay = 40000
@@ -790,11 +834,6 @@ def hdl_wid_114(params: WIDParams):
     btp.bap_broadcast_adv_start(broadcast_id)
 
     btp.bap_broadcast_source_start(broadcast_id)
-
-    data = bytearray([j for j in range(0, 41)])
-
-    for _ in range(1, 100):
-        _safe_bap_send(0, data)
 
     stack.bap.hdl_wid_114_cnt += 1
 
